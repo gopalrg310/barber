@@ -1,98 +1,84 @@
 package main
-
 import (
-	"fmt"
-	"sync"
-	"time"
+ "context"
+ "fmt"
+ "sync"
+ "time"
 )
-
-const (
-	numBarbers        = 2
-	numWaitingChairs  = 5
-	openingTime       = 8 * time.Hour
-	closingTime       = 17 * time.Hour
-	haircutDuration   = 30 * time.Minute
-	clientArrivalTime = 10 * time.Minute
-)
-
-type BarberShop struct {
-	mu              sync.Mutex
-	waitingChairs   chan bool
-	barberAvailable chan bool
+var wakeBell chan bool
+var sleepBell chan bool
+func sleepBarber(name string) {
+ sleepBell <- true
+ fmt.Println("=========== Barber went for sleep")
 }
-
-func NewBarberShop() *BarberShop {
-	return &BarberShop{
-		waitingChairs:   make(chan bool, numWaitingChairs),
-		barberAvailable: make(chan bool, numBarbers),
-	}
+func wakeBarber() {
+ fmt.Println("=========== Wakeup barber")
 }
-
-func (bs *BarberShop) openShop() {
-	closeTime := time.Now().Add(closingTime)
-
-	for {
-		select {
-		case <-time.After(clientArrivalTime):
-			bs.handleClient()
-		case <-time.After(closeTime.Sub(time.Now())):
-			bs.waitForEmptyWaitingRoom()
-			fmt.Println("Barber shop is closing.")
-			return
-		}
-	}
+func barberCutting(name string) {
+ for i := 0; i < 5; i++ {
+  fmt.Println("=========== Cutting in progress for ", name)
+  time.Sleep(1 * time.Second)
+ }
+ fmt.Println("=========== Cutting completed for ", name)
 }
-
-func (bs *BarberShop) handleClient() {
-	bs.mu.Lock()
-	select {
-	case bs.barberAvailable <- true:
-		// There is an available barber
-		bs.mu.Unlock()
-		go bs.cutHair()
-	case bs.waitingChairs <- true:
-		// No available barber, but there's a waiting chair
-		bs.mu.Unlock()
-		fmt.Println("Client takes a seat.")
-	}
+func barberShop(chairs chan string, ctx context.Context, wg *sync.WaitGroup) {
+ wg.Add(1)
+ sleepBell <- true
+ defer wg.Done()
+ fmt.Println("=========== Barber shop opened")
+ defer fmt.Println("=========== Barber shop closed")
+ closeShop := false
+ for {
+  select {
+  case name := <-chairs:
+   barberCutting(name)
+   if len(chairs) == 0 {
+    if !closeShop {
+     sleepBarber(name)
+    } else {
+     return
+    }
+   }
+  case <-wakeBell:
+   wakeBarber()
+  case <-ctx.Done():
+   if len(chairs) == 0 {
+    return
+   }
+   closeShop = true
+  }
 }
-
-func (bs *BarberShop) cutHair() {
-	fmt.Println("Barber starts cutting hair.")
-	time.Sleep(haircutDuration)
-	fmt.Println("Barber finishes cutting hair.")
-	<-bs.barberAvailable
-	bs.mu.Lock()
-	if len(bs.waitingChairs) > 0 {
-		// There is a waiting customer, wake up the barber
-		bs.mu.Unlock()
-		<-bs.waitingChairs
-		bs.barberAvailable <- true
-	} else {
-		bs.mu.Unlock()
-	}
 }
-
-func (bs *BarberShop) waitForEmptyWaitingRoom() {
-	fmt.Println("Barber shop is closing. Waiting for the waiting room to be empty.")
-	for len(bs.waitingChairs) > 0 {
-		<-bs.waitingChairs
-	}
+func customerEntry(name string, chairs chan string) {
+ fmt.Printf("=========== Customer %s entered Barber shop\n", name)
+ select {
+case <-sleepBell:
+  wakeBell <- true
+  chairs <- name
+  fmt.Printf("=========== Got a chair for %s\n", name)
+ case chairs <- name:
+  fmt.Printf("=========== Got a chair for %s\n", name)
+ default:
+  fmt.Printf("=========== No chair for %s, hence leaving Barber shop\n", name)
+ }
 }
-
 func main() {
-	barberShop := NewBarberShop()
-
-	// Start the barbers
-	for i := 0; i < numBarbers; i++ {
-		go func() {
-			for {
-				<-barberShop.barberAvailable
-				barberShop.cutHair()
-			}
-		}()
-	}
-
-	// Start the barber shop
-	barberShop.openShop()
+ wakeBell = make(chan bool)
+ sleepBell = make(chan bool, 1)
+ chairs := make(chan string, 2)
+ wg := new(sync.WaitGroup)
+ ctx, cancel := context.WithCancel(context.Background())
+ go barberShop(chairs, ctx, wg)
+ <-sleepBell
+ customerEntry("Anil", chairs)
+ customerEntry("Dravid", chairs)
+ customerEntry("Sachin", chairs)
+ customerEntry("Sourav", chairs)
+ time.Sleep(20 * time.Second)
+ customerEntry("Dhoni", chairs)
+ cancel()
+ wg.Wait()
+ close(wakeBell)
+ close(chairs)
+ fmt.Println("=========== Exiting...")
 }
